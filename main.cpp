@@ -41,6 +41,31 @@ Ip key_value_exists(const std::multimap<Ip, Ip>& mmap, Ip key, Ip value) {
     return Ip("127.1.1.1");
 }
 
+Ip get_gateway_for_interface(const char* interface) {
+    std::string command = "ip route show dev " + string(interface);
+    FILE *fp = popen(command.c_str(), "r");
+    if (fp == NULL) {
+        perror("popen");
+        return Ip("127.0.0.1");
+    }
+
+    char line[256];
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        char *gateway = strstr(line, "via ");
+        if (gateway) {
+            gateway += 4; // Skip "via " part
+            char *end = strchr(gateway, ' ');
+            if (end) {
+                *end = '\0'; // Null-terminate the gateway IP address
+                return Ip(gateway);
+            }
+        }
+    }
+
+    pclose(fp);
+	return Ip("127.0.0.1");
+}
+
 Mac getMyMac(const char* interfaceName) {
     struct ifaddrs *ifaddr = NULL;
     struct ifaddrs *ifa = NULL;
@@ -304,8 +329,9 @@ int main(int argc, char* argv[]) {
 					Mac dmac = resolveMacAddrFromSendArp(handle, myIp, myMac, target);
 
 					receivedPacketIp->eth_.smac_ = myMac; 
-					receivedPacketIp->eth_.dmac_ = receivedPacketIp->eth_.dmac_;
+					receivedPacketIp->eth_.dmac_ = dmac;
 					receivedPacketIp->ip_.src_ip_ = myIp;
+					receivedPacketIp->ip_.dst_ip_ = target;
 
 					int packetLen = receivedPacketIp->ip_.total_length_;
 
